@@ -1,0 +1,66 @@
+"""
+Carga, limpieza y partición del dataset. Salida: data/clean.parquet
+"""
+
+from huggingface_hub import snapshot_download
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+
+from src.config import HF_REPO, RAW_DIR, get_spark
+
+
+def download_raw() -> None:
+    """Descarga los parquet originales de Hugging Face (solo la primera vez)."""
+    if RAW_DIR.exists() and any(RAW_DIR.rglob("*.parquet")):
+        print(f"Datos ya descargados en {RAW_DIR}")
+        return
+    snapshot_download(
+        repo_id=HF_REPO,
+        repo_type="dataset",
+        allow_patterns="data/*.parquet",
+        local_dir=RAW_DIR,
+    )
+    print(f"Descarga completa en {RAW_DIR}")
+
+
+def load_raw(spark: SparkSession) -> DataFrame:
+    """Lee los 7 parquet como un único DataFrame."""
+    return spark.read.parquet(str(RAW_DIR / "data"))
+
+
+def audit_artifacts(df: DataFrame) -> None:
+    """% de textos de cada clase con artefactos de formato (posibles atajos)."""
+    text = F.col("text")
+    checks = {
+        "empieza_minuscula": text.rlike(r"^[a-z]"),
+        "empieza_espacio": text.rlike(r"^\s"),
+        "comillas_latex": text.contains("``"),
+        "apostrofo_separado": text.rlike(r"\w [’'] \w"),
+        "salto_literal": text.contains("\\n"),     # el texto "\n", no un salto real
+        "salto_real": text.contains("\n"),
+    }
+    df.groupBy("source").agg(
+        *[F.round(F.avg(cond.cast("int")) * 100, 2).alias(name) for name, cond in checks.items()]
+    ).show(truncate=False)
+
+    # Distribución de longitudes (percentiles 5, 25, 50, 75 y 95)
+    df.groupBy("source").agg(
+        F.percentile_approx(F.length(text), [0.05, 0.25, 0.5, 0.75, 0.95]).alias("percentiles_chars")
+    ).show(truncate=False)
+
+
+if __name__ == "__main__":
+    download_raw()
+    spark = get_spark()
+    df = load_raw(spark)
+    audit_artifacts(df)
+
+    # Primera inspección
+    # df.printSchema()
+    # print("Filas totales:", df.count())
+    # df.groupBy("source").count().show()
+    # df.select(
+    #     "source",
+    #     F.length("text").alias("n_chars"),
+    #     F.substring("text", 1, 120).alias("inicio"),
+    # ).show(10, truncate=False)
