@@ -27,6 +27,19 @@ def load_raw(spark: SparkSession) -> DataFrame:
     """Lee los 7 parquet como un único DataFrame."""
     return spark.read.parquet(str(RAW_DIR / "data"))
 
+def add_subsource(df: DataFrame) -> DataFrame:
+    """Fuente original inferida a partir de los rangos de id. NUNCA usar como feature."""
+    i, h = F.col("id"), F.col("source") == "human"
+    sub = (F.when(h & (i < 127_500), "human_ivypanda")
+            .when(h & (i < 387_000), "human_webtext")
+            .when(h & (i < 444_000), "human_hc3")
+            .when(h, "human_reddit_wp")
+            .when(i < 1_081_500, "ai_gpt3")
+            .when(i < 1_339_500, "ai_gpt2")
+            .when(i < 1_386_000, "ai_gptj")
+            .otherwise("ai_chatgpt"))
+    return df.withColumn("subsource", sub)
+
 
 def audit_artifacts(df: DataFrame) -> None:
     """% de textos de cada clase con artefactos de formato (posibles atajos)."""
