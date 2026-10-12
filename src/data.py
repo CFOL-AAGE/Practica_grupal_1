@@ -8,6 +8,8 @@ from pyspark.sql import functions as F
 
 from src.config import HF_REPO, RAW_DIR, get_spark
 
+HEADING = r'''(?m)^[^\n]{0,150}[^.!?"'\n ][ \t]*$'''   # línea corta sin puntuación final
+
 
 def download_raw() -> None:
     """Descarga los parquet originales de Hugging Face (solo la primera vez)."""
@@ -39,6 +41,28 @@ def add_subsource(df: DataFrame) -> DataFrame:
             .when(i < 1_386_000, "ai_gptj")
             .otherwise("ai_chatgpt"))
     return df.withColumn("subsource", sub)
+
+
+def clean_text(df: DataFrame) -> DataFrame:
+    """Elimina artefactos de formato. Misma regla para ambas clases (no usa la etiqueta)."""
+    t = F.col("text")
+    # 1. Comillas LaTeX/tipográficas -> rectas
+    t = F.regexp_replace(t, r"``|''|[“”]", '"')
+    t = F.regexp_replace(t, r"[’‘]", "'")
+    # 2. Títulos, índices y encabezados (antes de quitar los saltos de línea)
+    t = F.regexp_replace(t, HEADING, "")
+    # 3. Marcas de markdown
+    t = F.regexp_replace(t, r"\*", "")
+    # 4. Destokenizar: "can ' t", "do n't", "word ." , "( word )"
+    t = F.regexp_replace(t, r"(\w) ' (\w)", "$1'$2")
+    t = F.regexp_replace(t, r"(\w) (n't|'s|'re|'ve|'ll|'d|'m)\b", "$1$2")
+    t = F.regexp_replace(t, r" ([,.!?;:)])", "$1")
+    t = F.regexp_replace(t, r"\( ", "(")
+    # 5. Espacios y saltos -> un espacio; quitar extremos
+    t = F.trim(F.regexp_replace(t, r"\s+", " "))
+    # 6. Empezar en la primera frase completa
+    t = F.regexp_replace(t, r'^.*?[.!?]"? (?=[A-Z"])', "")
+    return df.withColumn("text", t)
 
 
 def audit_artifacts(df: DataFrame) -> None:
