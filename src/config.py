@@ -21,7 +21,7 @@ SEED = 42
 SAMPLE_SIZE = None        # None = dataset completo
 TUNING_FRACTION = 0.15    # fracción de train usada en CrossValidator
 MIN_WORDS = 50            # textos más cortos se descartan
-WINDOW_WORDS = 200        # ventana fija para neutralizar el atajo de la longitud
+WINDOW_WORDS = 100        # ventana fija para neutralizar el atajo de la longitud (justificada en análisis exploratorio)
 LABELS = {"human": 0, "ai": 1}
 
 # --- Splits ---

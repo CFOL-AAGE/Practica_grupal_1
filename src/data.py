@@ -5,8 +5,10 @@ Carga, limpieza y partición del dataset. Salida: data/clean.parquet
 from huggingface_hub import snapshot_download
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
-from src.config import HF_REPO, RAW_DIR, get_spark
+from src.config import (HF_REPO, RAW_DIR, CLEAN_PATH, WINDOW_WORDS, SEED,
+                        SPLITS, LM_FIT_FRACTION, get_spark)
 
 HEADING = r'''(?m)^[^\n]{0,150}[^.!?"'\n ][ \t]*$'''   # línea corta sin puntuación final
 
@@ -28,6 +30,27 @@ def download_raw() -> None:
 def load_raw(spark: SparkSession) -> DataFrame:
     """Lee los 7 parquet como un único DataFrame."""
     return spark.read.parquet(str(RAW_DIR / "data"))
+
+def audit_artifacts(df: DataFrame) -> None:
+    """% de textos de cada clase con artefactos de formato (posibles atajos)."""
+    text = F.col("text")
+    checks = {
+        "empieza_minuscula": text.rlike(r"^[a-z]"),
+        "empieza_espacio": text.rlike(r"^\s"),
+        "comillas_latex": text.contains("``"),
+        "apostrofo_separado": text.rlike(r"\w [’'] \w"),
+        "salto_literal": text.contains("\\n"),     # el texto "\n", no un salto real
+        "salto_real": text.contains("\n"),
+    }
+    df.groupBy("source").agg(
+        *[F.round(F.avg(cond.cast("int")) * 100, 2).alias(name) for name, cond in checks.items()]
+    ).show(truncate=False)
+
+    # Distribución de longitudes (percentiles 5, 25, 50, 75 y 95)
+    df.groupBy("source").agg(
+        F.percentile_approx(F.length(text), [0.05, 0.25, 0.5, 0.75, 0.95]).alias("percentiles_chars")
+    ).show(truncate=False)
+
 
 def add_subsource(df: DataFrame) -> DataFrame:
     """Fuente original inferida a partir de los rangos de id. NUNCA usar como feature."""
@@ -65,32 +88,58 @@ def clean_text(df: DataFrame) -> DataFrame:
     return df.withColumn("text", t)
 
 
-def audit_artifacts(df: DataFrame) -> None:
-    """% de textos de cada clase con artefactos de formato (posibles atajos)."""
-    text = F.col("text")
-    checks = {
-        "empieza_minuscula": text.rlike(r"^[a-z]"),
-        "empieza_espacio": text.rlike(r"^\s"),
-        "comillas_latex": text.contains("``"),
-        "apostrofo_separado": text.rlike(r"\w [’'] \w"),
-        "salto_literal": text.contains("\\n"),     # el texto "\n", no un salto real
-        "salto_real": text.contains("\n"),
-    }
-    df.groupBy("source").agg(
-        *[F.round(F.avg(cond.cast("int")) * 100, 2).alias(name) for name, cond in checks.items()]
-    ).show(truncate=False)
+def apply_window(df: DataFrame, n_words: int) -> DataFrame:
+    """Recorta cada texto a sus primeras n_words palabras; descarta los más cortos."""
+    words = F.split("text", " ")
+    return (df.withColumn("n_words_orig", F.size(words))
+              .filter(F.col("n_words_orig") >= n_words)
+              .withColumn("text", F.array_join(F.slice(words, 1, n_words), " ")))
 
-    # Distribución de longitudes (percentiles 5, 25, 50, 75 y 95)
-    df.groupBy("source").agg(
-        F.percentile_approx(F.length(text), [0.05, 0.25, 0.5, 0.75, 0.95]).alias("percentiles_chars")
-    ).show(truncate=False)
+
+def drop_duplicates(df: DataFrame) -> DataFrame:
+    """Una copia por texto; elimina textos que aparecen con etiquetas distintas."""
+    por_texto = Window.partitionBy("text")
+    return (df.withColumn("n_labels", F.size(F.collect_set("label").over(por_texto)))
+              .withColumn("rn", F.row_number().over(por_texto.orderBy("id")))
+              .filter((F.col("n_labels") == 1) & (F.col("rn") == 1))
+              .drop("n_labels", "rn"))
+
+
+def assign_split(df: DataFrame) -> DataFrame:
+    """Split determinista por hash del id: no depende del particionado (Tema 3, diap. 51)."""
+    h = F.pmod(F.xxhash64("id", F.lit(SEED)), 100)
+    h_lm = F.pmod(F.xxhash64("id", F.lit(SEED + 1)), 100)
+    t = int(SPLITS["train"] * 100)
+    v = t + int(SPLITS["val"] * 100)
+    split = (F.when((h < t) & (F.col("label") == 0.0) & (h_lm < LM_FIT_FRACTION * 100), "lm_fit")
+              .when(h < t, "train")
+              .when(h < v, "val")
+              .otherwise("test"))
+    return df.withColumn("split", split)
+
+
+def build_clean(spark: SparkSession) -> None:
+    """Pipeline completo de preprocesado -> data/clean.parquet"""
+    df = load_raw(spark)
+    df = add_subsource(df)
+    df = clean_text(df)
+    df = apply_window(df, WINDOW_WORDS)
+    df = df.withColumn("label", (F.col("source") == "ai").cast("double"))
+    df = drop_duplicates(df)
+    df = assign_split(df)
+    (df.select("id", "text", "label", "source", "subsource", "n_words_orig", "split")
+       .write.mode("overwrite")
+       .partitionBy("split")
+       .parquet(str(CLEAN_PATH)))
+    
 
 
 if __name__ == "__main__":
     download_raw()
     spark = get_spark()
-    df = load_raw(spark)
-    audit_artifacts(df)
+    build_clean(spark)
+    clean = spark.read.parquet(str(CLEAN_PATH))
+    clean.groupBy("split", "source").count().orderBy("split", "source").show()
 
     # Primera inspección
     # df.printSchema()
