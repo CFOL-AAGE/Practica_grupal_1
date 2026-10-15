@@ -27,7 +27,8 @@ pip install -r requirements.txt
 ### 1. Preprocesado
 
 ~~~bash
-python -m src.data
+cd src/
+python3 clean_data.py
 ~~~
 
 Descarga el dataset de Hugging Face (solo la primera vez) y genera `data/clean.parquet`:
