@@ -7,7 +7,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from src.config import (HF_REPO, RAW_DIR, CLEAN_PATH, WINDOW_WORDS, SEED,
+from config import (HF_REPO, RAW_DIR, CLEAN_PATH, WINDOW_WORDS, SEED,
                         SPLITS, LM_FIT_FRACTION, get_spark)
 
 HEADING = r'''(?m)^[^\n]{0,150}[^.!?"'\n ][ \t]*$'''   # línea corta sin puntuación final
