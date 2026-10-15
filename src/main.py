@@ -4,8 +4,8 @@ Procesamiento de datos...
 import os
 
 from clean_data import build_clean
-from config import CLEAN_PATH, LEXICAL_PATH, get_spark
-from features_lexical import LexicalFamily
+from config import CHAR_PATH, CLEAN_PATH, LEXICAL_PATH, get_spark
+from features_families import CharFamily, LexicalFamily
 
 
 
@@ -23,11 +23,16 @@ def main():
     if not data_already_exists(CLEAN_PATH): # Save 5 minutes of time execution.
         build_clean(spark)
 
-    # 2) Loading the clean data and start building the n-grams of the texts.
+    # Loading the clean data
     df_clean = spark.read.parquet(str(CLEAN_PATH))
 
+    # 2) Lexical Family
     if not data_already_exists(LEXICAL_PATH):
         LexicalFamily().save(df_clean)
+
+    # 3) Char Family
+    if not data_already_exists(CHAR_PATH):
+        CharFamily().save(df_clean)
 
 
 if __name__ == "__main__":
