@@ -6,6 +6,7 @@ import os
 from clean_data import build_clean
 from config import CHAR_PATH, CLEAN_PATH, LEXICAL_PATH, get_spark
 from features_families import CharFamily, LexicalFamily
+from train import train_all_sparse
 
 
 
@@ -33,6 +34,9 @@ def main():
     # 3) Char Family
     if not data_already_exists(CHAR_PATH):
         CharFamily().save(df_clean)
+
+    # 4) Models over the sparse features (the ones already saved are skipped)
+    train_all_sparse(spark)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ CLEAN_PATH = DATA_DIR / "clean.parquet"            # salida de data.py
 FEATURES_DIR = ROOT / "features"                   # un parquet por familia de features
 LEXICAL_PATH = FEATURES_DIR / "lexical.parquet"    # familia 1: (id, tf, tf_nostop)
 CHAR_PATH = FEATURES_DIR / "char.parquet"          # familia 2: (id, tf_char)
+MODELS_DIR = ROOT / "models"                       # PipelineModel entrenados (uno por familia y modelo)
 
 HF_REPO = "artem9k/ai-text-detection-pile"
 

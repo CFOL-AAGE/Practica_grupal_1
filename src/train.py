@@ -1,0 +1,166 @@
+"""
+Training of the models defined in models.py.
+
+Sparse features (families 1 and 2): tune_sparse, train_sparse_model, train_all_sparse
+
+Common to every family (they only need `id` and `label`):
+    add_stratified_folds, best_params
+
+Dense features (families 3 and 4): ...
+"""
+
+from pyspark.ml import PipelineModel
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+from pyspark.ml.tuning import CrossValidator, CrossValidatorModel
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+from config import CHAR_PATH, LEXICAL_PATH, MODELS_DIR, SEED, TUNING_FRACTION
+from load_datasets import load_split
+from models import build_sparse_grid, build_sparse_pipeline
+
+# Parquet where each sparse column (families 1 and 2) lives
+FEATURE_PATHS = {"tf": LEXICAL_PATH, "tf_nostop": LEXICAL_PATH, "tf_char": CHAR_PATH}
+
+
+
+def add_stratified_folds(df: DataFrame, num_folds: int) -> DataFrame:
+    """
+    Adds the column `fold` (0 .. num_folds - 1) with the same share of each class
+    in every fold. Valid for any family (only uses `id` and `label`).
+
+    Args:
+        df: DataFrame
+            Needs the columns `id` and `label`
+        num_folds: int
+
+    Returns:
+        DataFrame
+            df + `fold` (int)
+    """
+    # SEED + 2: independent from the hashes of assign_split (SEED and SEED + 1)
+    by_class = Window.partitionBy("label").orderBy(F.xxhash64("id", F.lit(SEED + 2)))
+    folds = (
+        df.select("id", "label").
+            withColumn("fold", ((F.row_number().over(by_class) - 1) % num_folds).cast("int")).
+            select("id", "fold")
+    )
+    return df.join(F.broadcast(folds), on="id", how="inner")
+
+
+
+def tune_sparse(train: DataFrame, input_col: str, model: str,
+                num_folds: int = 3, parallelism: int = 2) -> CrossValidatorModel:
+    """
+    Selects the hyperparameters of one sparse model (families 1 and 2) with a
+    stratified k-fold CrossValidator over a stratified sample of train
+    (TUNING_FRACTION of each class).
+
+    Args:
+        train: DataFrame
+            Output of load_split(..., "train")
+        input_col: str
+            "tf", "tf_nostop" or "tf_char"
+        model: str
+            "nb", "lr" or "svc"
+        num_folds: int
+            Number of folds of the cross validation
+        parallelism: int
+            Number of combinations trained at the same time
+
+    Returns:
+        CrossValidatorModel
+            avgMetrics: mean AUC-PR of each combination over the folds
+    """
+    pipeline = build_sparse_pipeline(input_col, model)
+
+    # Same fraction for each class: the sample keeps the 29 % of AI of train
+    fractions = {0.0: TUNING_FRACTION, 1.0: TUNING_FRACTION}
+    sample = train.sampleBy("label", fractions=fractions, seed=SEED)
+    sample = add_stratified_folds(sample, num_folds)
+
+    # AUC-PR of the class 1.0 (AI); rawPrediction exists in the three models
+    evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="rawPrediction",
+                                              metricName="areaUnderPR")
+
+    # foldCol: the folds are the ones of add_stratified_folds instead of a random split
+    cv = CrossValidator(estimator=pipeline, estimatorParamMaps=build_sparse_grid(pipeline, model),
+                        evaluator=evaluator, numFolds=num_folds, foldCol="fold",
+                        parallelism=parallelism)
+    return cv.fit(sample)
+
+
+
+def best_params(cv_model: CrossValidatorModel) -> tuple:
+    """
+    Returns the combination of hyperparameters with the best mean AUC-PR.
+    Valid for the CrossValidatorModel of any family.
+
+    Args:
+        cv_model: CrossValidatorModel
+            Output of tune_sparse (or of the CrossValidator of any family)
+
+    Returns:
+        tuple
+            (ParamMap of the best combination, its mean AUC-PR)
+    """
+    metrics = cv_model.avgMetrics
+    best = max(range(len(metrics)), key=metrics.__getitem__)
+    return cv_model.getEstimatorParamMaps()[best], metrics[best]
+
+
+
+def train_sparse_model(spark: SparkSession, input_col: str, model: str,
+                       parallelism: int = 2) -> None:
+    """
+    Tunes one sparse model (families 1 and 2), fits it with the whole train and
+    saves it. Skipped if the model was already saved.
+
+    Args:
+        spark: SparkSession
+        input_col: str
+            "tf", "tf_nostop" or "tf_char"
+        model: str
+            "nb", "lr" or "svc"
+        parallelism: int
+            Number of combinations trained at the same time in the CrossValidator
+    """
+    path = MODELS_DIR / f"{input_col}_{model}"
+    if (path / "_SUCCESS").exists():        # written at the end of a complete save
+        return
+
+    # Only the column used: the other vectors of the parquet are not read (column pruning)
+    train = load_split(spark, FEATURE_PATHS[input_col], "train").select("id", input_col, "label")
+
+    cv_model = tune_sparse(train, input_col, model, parallelism=parallelism)
+    params, auc_pr = best_params(cv_model)
+    print(f"[{path.name}] AUC-PR (CV) = {auc_pr:.4f} | "
+          + ", ".join(f"{p.name}={v}" for p, v in params.items()))
+
+    # bestModel was fitted only with the sample: refit the same Pipeline with the whole train
+    final_model: PipelineModel = cv_model.getEstimator().fit(train, params)
+
+    final_model.write().overwrite().save(str(path))
+    (path / "_SUCCESS").touch()
+
+
+
+def train_all_sparse(spark: SparkSession, input_cols: tuple = ("tf", "tf_nostop", "tf_char"),
+                     models: tuple = ("nb", "svc", "lr"), parallelism: int = 2) -> None:
+    """
+    Trains every combination of sparse column x model of the families 1 and 2
+    (the saved ones are skipped).
+
+    Args:
+        spark: SparkSession
+        input_cols: tuple
+            Sparse columns to use
+        models: tuple
+            Models to train
+        parallelism: int
+            Number of combinations trained at the same time in the CrossValidator
+    """
+    for input_col in input_cols:
+        for model in models:
+            train_sparse_model(spark, input_col, model, parallelism)
