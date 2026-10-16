@@ -6,7 +6,7 @@ Sparse features (families 1 and 2): tune_sparse, train_sparse_model, train_all_s
 Common to every family (they only need `id` and `label`):
     add_stratified_folds, best_params
 
-Dense features (families 3 and 4): ...
+Dense features (families 3 and 4): tune_dense, train_dense_model, train_all_dense
 """
 
 from pyspark.ml import PipelineModel
@@ -16,13 +16,14 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from config import CHAR_PATH, LEXICAL_PATH, MODELS_DIR, SEED, TUNING_FRACTION
+from config import CHAR_PATH, LEXICAL_PATH, LM_PATH, MODELS_DIR, SEED, TUNING_FRACTION
 from load_datasets import load_split
-from models import build_sparse_grid, build_sparse_pipeline
+from models import build_dense_grid, build_dense_pipeline, build_sparse_grid, build_sparse_pipeline
 
 # Parquet where each sparse column (families 1 and 2) lives
 FEATURE_PATHS = {"tf": LEXICAL_PATH, "tf_nostop": LEXICAL_PATH, "tf_char": CHAR_PATH}
-
+# Parquet where each dense column (families 3 and 4) lives
+DENSE_PATHS = {"features_lm": LM_PATH}      # + "features_style": STYLE_PATH (family 3)
 
 
 def add_stratified_folds(df: DataFrame, num_folds: int) -> DataFrame:
@@ -145,7 +146,6 @@ def train_sparse_model(spark: SparkSession, input_col: str, model: str,
     (path / "_SUCCESS").touch()
 
 
-
 def train_all_sparse(spark: SparkSession, input_cols: tuple = ("tf", "tf_nostop", "tf_char"),
                      models: tuple = ("nb", "svc", "lr"), parallelism: int = 2) -> None:
     """
@@ -164,3 +164,98 @@ def train_all_sparse(spark: SparkSession, input_cols: tuple = ("tf", "tf_nostop"
     for input_col in input_cols:
         for model in models:
             train_sparse_model(spark, input_col, model, parallelism)
+
+
+def tune_dense(train: DataFrame, input_col: str, model: str,
+               num_folds: int = 3, parallelism: int = 2) -> CrossValidatorModel:
+    """
+    Selects the hyperparameters of one dense model (families 3 and 4) with a
+    stratified k-fold CrossValidator over a stratified sample of train
+    (TUNING_FRACTION of each class).
+
+    Args:
+        train: DataFrame
+            Output of load_split(..., "train")
+        input_col: str
+            Dense features column: "features_lm" (or "features_style")
+        model: str
+            "lr" or "gbt"
+        num_folds: int
+            Number of folds of the cross validation
+        parallelism: int
+            Number of combinations trained at the same time
+
+    Returns:
+        CrossValidatorModel
+            avgMetrics: mean AUC-PR of each combination over the folds
+    """
+    pipeline = build_dense_pipeline(input_col, model)
+
+    # Same fraction for each class: the sample keeps the 29 % of AI of train
+    fractions = {0.0: TUNING_FRACTION, 1.0: TUNING_FRACTION}
+    sample = train.sampleBy("label", fractions=fractions, seed=SEED)
+    sample = add_stratified_folds(sample, num_folds)
+
+    # AUC-PR of the class 1.0 (AI); rawPrediction exists in LR and GBT
+    evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="rawPrediction",
+                                              metricName="areaUnderPR")
+
+    cv = CrossValidator(estimator=pipeline, estimatorParamMaps=build_dense_grid(pipeline, model),
+                        evaluator=evaluator, numFolds=num_folds, foldCol="fold",
+                        parallelism=parallelism)
+    return cv.fit(sample)
+
+
+def train_dense_model(spark: SparkSession, input_col: str, model: str,
+                      parallelism: int = 2) -> None:
+    """
+    Tunes one dense model (families 3 and 4), fits it with the whole train and
+    saves it. Skipped if the model was already saved.
+
+    Args:
+        spark: SparkSession
+        input_col: str
+            "features_lm" (or "features_style")
+        model: str
+            "lr" or "gbt"
+        parallelism: int
+            Number of combinations trained at the same time in the CrossValidator
+    """
+    path = MODELS_DIR / f"{input_col}_{model}"
+    if (path / "_SUCCESS").exists():        # written at the end of a complete save
+        return
+
+    # Only the column used: the 9 separate feature columns are not read (column pruning)
+    train = load_split(spark, DENSE_PATHS[input_col], "train").select("id", input_col, "label")
+
+    cv_model = tune_dense(train, input_col, model, parallelism=parallelism)
+    params, auc_pr = best_params(cv_model)
+    print(f"[{path.name}] AUC-PR (CV) = {auc_pr:.4f} | "
+          + ", ".join(f"{p.name}={v}" for p, v in params.items()))
+
+    # bestModel was fitted only with the sample: refit the same Pipeline with the whole train
+    final_model: PipelineModel = cv_model.getEstimator().fit(train, params)
+
+    final_model.write().overwrite().save(str(path))
+    (path / "_SUCCESS").touch()
+
+
+
+def train_all_dense(spark: SparkSession, input_cols: tuple = ("features_lm",),
+                    models: tuple = ("lr", "gbt"), parallelism: int = 2) -> None:
+    """
+    Trains every combination of dense column x model of the families 3 and 4
+    (the saved ones are skipped).
+
+    Args:
+        spark: SparkSession
+        input_cols: tuple
+            Dense columns to use
+        models: tuple
+            Models to train
+        parallelism: int
+            Number of combinations trained at the same time in the CrossValidator
+    """
+    for input_col in input_cols:
+        for model in models:
+            train_dense_model(spark, input_col, model, parallelism)
