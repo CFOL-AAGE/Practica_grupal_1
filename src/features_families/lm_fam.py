@@ -2,8 +2,6 @@
 Familia 4 — Predictibilidad: modelo de lenguaje de n-gramas (Stupid Backoff)
 entrenado con textos humanos (split lm_fit) y features de previsibilidad por texto.
 """
-from operator import add
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -46,17 +44,20 @@ def count_ngrams(spark):
     # 1. Coge los textos humanos de lm_fit y los trocea en tokens
     lm_texts = tokenize(spark.read.parquet(str(CLEAN_PATH)).filter("split = 'lm_fit'"))
 
-    counts = (lm_texts.select("tokens").rdd # WORDCOUNT
-              # 2. De cada texto saca TODOS sus grupos de 1, 2 y 3 palabras,
-              #    y a cada uno le pone un 1:  ("on", 1), ("on the", 1), ("on the other", 1)...
-              .flatMap(lambda row: [(g, 1) for g in _ngrams(row.tokens, LM_ORDER)])
-              # 3. Suma los 1 de cada grupo igual:  ("on the other", 5000)
-              .reduceByKey(add, numPartitions=64))
+    # 2. De cada texto saca TODOS sus grupos de 1, 2 y 3 palabras (lo mismo que _ngrams, pero
+    #    dentro de la JVM: sin workers de Python ni serializar cada n-grama a Python y de vuelta)
+    grams = F.flatten(F.array(*[
+        F.expr(f"transform(sequence(0, size(tokens) - {n}), i -> array_join(slice(tokens, i + 1, {n}), ' '))")
+        for n in range(1, LM_ORDER + 1)]))
 
-    # 4. Lo convierte en tabla, apunta si es de 1, 2 o 3 palabras (columna n) y lo guarda
-    (spark.createDataFrame(counts, ["ngram", "count"])
-          .withColumn("n", F.size(F.split("ngram", " ")))
-          .write.mode("overwrite").partitionBy("n").parquet(str(LM_DIR / "ngram_counts")))
+    # 3. WORDCOUNT: una fila por n-grama y se cuentan los iguales:  ("on the other", 5000)
+    #    groupBy agrega parcialmente en cada partición y vuelca a disco si no cabe en memoria
+    counts = (lm_texts.select(F.explode(grams).alias("ngram"))
+              .groupBy("ngram").agg(F.count("*").alias("count")))
+
+    # 4. Apunta si es de 1, 2 o 3 palabras (columna n) y lo guarda
+    (counts.withColumn("n", F.size(F.split("ngram", " ")))
+           .write.mode("overwrite").partitionBy("n").parquet(str(LM_DIR / "ngram_counts")))
 
 
 def build_table(spark: SparkSession) -> None:
