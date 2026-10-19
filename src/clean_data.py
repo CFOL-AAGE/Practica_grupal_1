@@ -2,33 +2,43 @@
 Carga, limpieza y partición del dataset. Salida: data/clean.parquet
 """
 
+import os
+import sys
+
 from huggingface_hub import snapshot_download
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from config import (HF_REPO, RAW_DIR, CLEAN_PATH, WINDOW_WORDS, SEED,
-                        SPLITS, LM_FIT_FRACTION, get_spark)
+from config import (ROOT, HF_REPO, RAW_DIR, CLEAN_PATH, WINDOW_WORDS,
+                    SEED, SPLITS, LM_FIT_FRACTION, get_spark)
+
 
 HEADING = r'''(?m)^[^\n]{0,150}[^.!?"'\n ][ \t]*$'''   # línea corta sin puntuación final
 
 
-def download_raw() -> None:
+def _download_raw():
     """Descarga los parquet originales de Hugging Face (solo la primera vez)."""
     if RAW_DIR.exists() and any(RAW_DIR.rglob("*.parquet")):
-        print(f"Datos ya descargados en {RAW_DIR}")
+        print(f"Datos ya descargados en {RAW_DIR.relative_to(ROOT)}!")
         return
+
+    elif not RAW_DIR.exists():
+        os.makedirs(RAW_DIR)
+
     snapshot_download(
         repo_id=HF_REPO,
         repo_type="dataset",
-        allow_patterns="data/*.parquet",
         local_dir=RAW_DIR,
     )
+
     print(f"Descarga completa en {RAW_DIR}")
 
 
 def load_raw(spark: SparkSession) -> DataFrame:
     """Lee los 7 parquet como un único DataFrame."""
+    _download_raw()
+    print("Empezando con la carga de datos...")
     return spark.read.parquet(str(RAW_DIR / "data"))
 
 def audit_artifacts(df: DataFrame) -> None:
@@ -131,22 +141,9 @@ def build_clean(spark: SparkSession) -> None:
        .write.mode("overwrite")
        .partitionBy("split")
        .parquet(str(CLEAN_PATH)))
-    
+
 
 
 if __name__ == "__main__":
-    download_raw()
     spark = get_spark()
     build_clean(spark)
-    clean = spark.read.parquet(str(CLEAN_PATH))
-    clean.groupBy("split", "source").count().orderBy("split", "source").show()
-
-    # Primera inspección
-    # df.printSchema()
-    # print("Filas totales:", df.count())
-    # df.groupBy("source").count().show()
-    # df.select(
-    #     "source",
-    #     F.length("text").alias("n_chars"),
-    #     F.substring("text", 1, 120).alias("inicio"),
-    # ).show(10, truncate=False)

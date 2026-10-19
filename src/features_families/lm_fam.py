@@ -9,7 +9,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler
 
-from src.config import CLEAN_PATH, LM_DIR, LM_ORDER, LM_MIN_COUNT, BACKOFF_ALPHA, FEATURES_DIR, get_spark
+from config import CLEAN_PATH, LM_DIR, LM_ORDER, LM_MIN_COUNT, BACKOFF_ALPHA, FEATURES_DIR, get_spark
 
 # Una palabra (con su contracción si la tiene: don't, it's) o un signo de puntuación suelto
 TOKEN_RE = r"[a-z0-9]+(?:'[\p{L}0-9]+)?|[^a-z0-9\s]"

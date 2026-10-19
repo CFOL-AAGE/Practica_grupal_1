@@ -18,7 +18,7 @@ from pyspark.ml.classification import LinearSVC, LogisticRegression, NaiveBayes,
 from pyspark.ml.feature import IDF, StandardScaler
 from pyspark.ml.tuning import ParamGridBuilder
 
-from src.config import SEED
+from config import SEED
 
 
 def build_sparse_pipeline(input_col: str, model: str) -> Pipeline:
