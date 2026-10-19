@@ -4,10 +4,14 @@ Training of the models defined in models.py.
 Sparse features (families 1 and 2): tune_sparse, train_sparse_model, train_all_sparse
 
 Common to every family (they only need `id` and `label`):
-    add_stratified_folds, best_params
+    add_stratified_folds, best_params, save_train_info
 
 Dense features (families 3 and 4): tune_dense, train_dense_model, train_all_dense
 """
+
+import json
+import time
+from pathlib import Path
 
 from pyspark.ml import PipelineModel
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
@@ -16,14 +20,14 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-from config import CHAR_PATH, LEXICAL_PATH, LM_PATH, MODELS_DIR, SEED, TUNING_FRACTION
+from config import CHAR_PATH, LEXICAL_PATH, LM_PATH, MODELS_DIR, SEED, STYLE_PATH, TUNING_FRACTION
 from load_datasets import load_split
 from models import build_dense_grid, build_dense_pipeline, build_sparse_grid, build_sparse_pipeline
 
 # Parquet where each sparse column (families 1 and 2) lives
 FEATURE_PATHS = {"tf": LEXICAL_PATH, "tf_nostop": LEXICAL_PATH, "tf_char": CHAR_PATH}
 # Parquet where each dense column (families 3 and 4) lives
-DENSE_PATHS = {"features_lm": LM_PATH}      # + "features_style": STYLE_PATH (family 3)
+DENSE_PATHS = {"features_style": STYLE_PATH, "features_lm": LM_PATH}
 
 
 def add_stratified_folds(df: DataFrame, num_folds: int) -> DataFrame:
@@ -81,8 +85,10 @@ def tune_sparse(train: DataFrame, input_col: str, model: str,
     sample = train.sampleBy("label", fractions=fractions, seed=SEED)
     sample = add_stratified_folds(sample, num_folds)
 
-    # AUC-PR of the class 1.0 (AI); rawPrediction exists in the three models
-    evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="rawPrediction",
+    # AUC-PR of the class 1.0 (AI), over element [1] of the score column. In NB rawPrediction
+    # is the log-likelihood of each class (it is not ordered by P(AI)): its probability is used
+    score_col = "probability" if model == "nb" else "rawPrediction"
+    evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol=score_col,
                                               metricName="areaUnderPR")
 
     # foldCol: the folds are the ones of add_stratified_folds instead of a random split
@@ -111,6 +117,28 @@ def best_params(cv_model: CrossValidatorModel) -> tuple:
     return cv_model.getEstimatorParamMaps()[best], metrics[best]
 
 
+def save_train_info(path: Path, params: dict, auc_pr: float, tune_s: float, fit_s: float) -> None:
+    """
+    Saves next to a trained model what evaluate.py reports about its training:
+    the CV AUC-PR, the chosen hyperparameters and the times.
+
+    Args:
+        path: Path
+            Folder of the saved PipelineModel
+        params: dict
+            ParamMap of the best combination (output of best_params)
+        auc_pr: float
+            Its mean AUC-PR over the folds
+        tune_s: float
+            Seconds of the CrossValidator
+        fit_s: float
+            Seconds of the final fit with the whole train
+    """
+    info = {"auc_pr_cv": auc_pr, "tune_s": tune_s, "fit_s": fit_s,
+            "params": {p.name: v for p, v in params.items()}}
+    (path / "train_info.json").write_text(json.dumps(info, indent=2))
+
+
 
 def train_sparse_model(spark: SparkSession, input_col: str, model: str,
                        parallelism: int = 2) -> None:
@@ -134,15 +162,20 @@ def train_sparse_model(spark: SparkSession, input_col: str, model: str,
     # Only the column used: the other vectors of the parquet are not read (column pruning)
     train = load_split(spark, FEATURE_PATHS[input_col], "train").select("id", input_col, "label")
 
+    start = time.perf_counter()
     cv_model = tune_sparse(train, input_col, model, parallelism=parallelism)
+    tune_s = time.perf_counter() - start
     params, auc_pr = best_params(cv_model)
     print(f"[{path.name}] AUC-PR (CV) = {auc_pr:.4f} | "
           + ", ".join(f"{p.name}={v}" for p, v in params.items()))
 
     # bestModel was fitted only with the sample: refit the same Pipeline with the whole train
+    start = time.perf_counter()
     final_model: PipelineModel = cv_model.getEstimator().fit(train, params)
+    fit_s = time.perf_counter() - start
 
     final_model.write().overwrite().save(str(path))
+    save_train_info(path, params, auc_pr, tune_s, fit_s)
     (path / "_SUCCESS").touch()
 
 
@@ -177,7 +210,7 @@ def tune_dense(train: DataFrame, input_col: str, model: str,
         train: DataFrame
             Output of load_split(..., "train")
         input_col: str
-            Dense features column: "features_lm" (or "features_style")
+            Dense features column: "features_style" or "features_lm"
         model: str
             "lr" or "gbt"
         num_folds: int
@@ -215,7 +248,7 @@ def train_dense_model(spark: SparkSession, input_col: str, model: str,
     Args:
         spark: SparkSession
         input_col: str
-            "features_lm" (or "features_style")
+            "features_style" or "features_lm"
         model: str
             "lr" or "gbt"
         parallelism: int
@@ -225,23 +258,28 @@ def train_dense_model(spark: SparkSession, input_col: str, model: str,
     if (path / "_SUCCESS").exists():        # written at the end of a complete save
         return
 
-    # Only the column used: the 9 separate feature columns are not read (column pruning)
+    # Only the column used (column pruning)
     train = load_split(spark, DENSE_PATHS[input_col], "train").select("id", input_col, "label")
 
+    start = time.perf_counter()
     cv_model = tune_dense(train, input_col, model, parallelism=parallelism)
+    tune_s = time.perf_counter() - start
     params, auc_pr = best_params(cv_model)
     print(f"[{path.name}] AUC-PR (CV) = {auc_pr:.4f} | "
           + ", ".join(f"{p.name}={v}" for p, v in params.items()))
 
     # bestModel was fitted only with the sample: refit the same Pipeline with the whole train
+    start = time.perf_counter()
     final_model: PipelineModel = cv_model.getEstimator().fit(train, params)
+    fit_s = time.perf_counter() - start
 
     final_model.write().overwrite().save(str(path))
+    save_train_info(path, params, auc_pr, tune_s, fit_s)
     (path / "_SUCCESS").touch()
 
 
 
-def train_all_dense(spark: SparkSession, input_cols: tuple = ("features_lm",),
+def train_all_dense(spark: SparkSession, input_cols: tuple = ("features_style", "features_lm"),
                     models: tuple = ("lr", "gbt"), parallelism: int = 2) -> None:
     """
     Trains every combination of dense column x model of the families 3 and 4

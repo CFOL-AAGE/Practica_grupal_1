@@ -7,7 +7,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler
 
-from config import CLEAN_PATH, LM_DIR, LM_ORDER, LM_MIN_COUNT, BACKOFF_ALPHA, FEATURES_DIR, get_spark
+from config import CLEAN_PATH, LM_DIR, LM_ORDER, LM_MIN_COUNT, BACKOFF_ALPHA, FEATURES_DIR, SEED, get_spark
 
 # Una palabra (con su contracción si la tiene: don't, it's) o un signo de puntuación suelto
 TOKEN_RE = r"[a-z0-9]+(?:'[\p{L}0-9]+)?|[^a-z0-9\s]"
@@ -225,12 +225,14 @@ def build_features(spark: SparkSession, fraction: float = None) -> None:
     found, N, V = lookup_counts(spark, token_rows(docs))
     feats = doc_features(score_tokens(found, N, V))
 
-    # Se recuperan etiqueta, split y fuente, y se juntan las 9 columnas en un vector
-    meta = docs.select("id", "label", "split", "subsource")
+    # Se recupera el split y se juntan las 9 columnas en un vector. Solo id + vector (+ split
+    # para particionar): label se añade en load_split, si se guardase aquí quedaría duplicada
+    meta = docs.select("id", "split")
     out = VectorAssembler(inputCols=LM_COLS, outputCol="features_lm").transform(meta.join(feats, "id"))
 
     name = "lm_sample.parquet" if fraction else "lm.parquet"
-    out.write.mode("overwrite").partitionBy("split").parquet(str(FEATURES_DIR / name))
+    (out.select("id", "split", "features_lm")
+        .write.mode("overwrite").partitionBy("split").parquet(str(FEATURES_DIR / name)))
 
 
 if __name__ == "__main__":
@@ -281,10 +283,14 @@ if __name__ == "__main__":
     elif paso == "features":
         frac = float(sys.argv[2]) if len(sys.argv) > 2 else None
         build_features(spark, frac)
+        from pyspark.ml.functions import vector_to_array
         f = spark.read.parquet(str(FEATURES_DIR / ("lm_sample.parquet" if frac else "lm.parquet")))
         print("textos:", f.count())
+        # label vive en clean.parquet; el vector se separa de nuevo en sus 9 columnas
+        f = (f.join(spark.read.parquet(str(CLEAN_PATH)).select("id", "label"), "id")
+              .withColumn("v", vector_to_array("features_lm")))
         (f.groupBy("label")
-          .agg(*[F.round(F.mean(c), 3).alias(c) for c in LM_COLS])
+          .agg(*[F.round(F.mean(F.col("v")[i]), 3).alias(c) for i, c in enumerate(LM_COLS)])
           .orderBy("label").show(truncate=False))
 
     spark.stop()

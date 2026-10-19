@@ -18,6 +18,7 @@ CHAR_PATH = FEATURES_DIR / "char.parquet"          # familia 2: (id, tf_char)
 LM_PATH = FEATURES_DIR / "lm.parquet"
 STYLE_PATH = FEATURES_DIR / "style.parquet"
 MODELS_DIR = ROOT / "models"                       # PipelineModel entrenados (uno por familia y modelo)
+RESULTS_DIR = ROOT / "results"                     # métricas de evaluate.py (CSV)
 
 
 HF_REPO = "artem9k/ai-text-detection-pile"

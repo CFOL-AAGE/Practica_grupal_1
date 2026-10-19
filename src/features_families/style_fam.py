@@ -688,7 +688,7 @@ def get_style_features(df: DataFrame, stopwords: list):
 
 
 def build_style_features(spark: SparkSession):
-    '''Genera features/style.parquet con las columnas id y features (vector).
+    '''Genera features/style.parquet con las columnas id y features_style (vector).
 
     lm_fit se salta: no lo usa ningun clasificador.
     '''
@@ -702,7 +702,7 @@ def build_style_features(spark: SparkSession):
     df = get_style_features(df, stopwords)
 
 
-    assembler = VectorAssembler(inputCols=FEATURES_ESTILO, outputCol='features')
+    assembler = VectorAssembler(inputCols=FEATURES_ESTILO, outputCol='features_style')
     df = assembler.transform(df)
 
-    df.select('id', 'features').write.mode('overwrite').parquet(str(STYLE_PATH))
+    df.select('id', 'features_style').write.mode('overwrite').parquet(str(STYLE_PATH))
