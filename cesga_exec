@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+
+zip cesga_p1.zip -q -r * -x "data/*" "features/*" "src/__pycache__/*" "src/features_families/__pycache__/*" "notebooks/.ipynb_checkpoints/*" "venv/*" "AAGE_2627-P1.pdf" "README.md" "cesga_exec" "memoria/*" "notebooks/.gitkeep"
+
+scp cesga_p1.zip cursob50@ft3.cesga.es:/home/ulc/cursos/cursob50/AAGE/Practica_grupal_1/cesga_p1.zip
