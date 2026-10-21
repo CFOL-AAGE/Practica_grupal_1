@@ -37,8 +37,25 @@ from train import add_stratified_folds
 FAMILIES = {"tf": "lexical", "tf_nostop": "lexical", "tf_char": "char",
             "features_style": "style", "features_lm": "lm"}
 
-EVALUATOR = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="score",
-                                          metricName="areaUnderPR")
+
+
+def auc_pr(scores: DataFrame) -> float:
+    """
+    AUC-PR de unos scores.
+
+    El evaluador se crea aquí y no a nivel de módulo: es un objeto de la JVM y no puede
+    existir antes que la SparkSession (main.py importa este módulo antes de get_spark).
+
+    Args:
+        scores: DataFrame
+            (id, label, score)
+
+    Returns:
+        float
+    """
+    evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="score",
+                                              metricName="areaUnderPR")
+    return evaluator.evaluate(scores)
 
 
 
@@ -56,10 +73,10 @@ def select_base_models(spark: SparkSession) -> dict:
     best = {}
     for name in trained_models():
         family = FAMILIES.get(name.rsplit("_", 1)[0], name.rsplit("_", 1)[0])
-        auc_pr = EVALUATOR.evaluate(predict(spark, name, "val"))
-        print(f"[stacking] {name} ({family}): AUC-PR val = {auc_pr:.4f}")
-        if family not in best or auc_pr > best[family][1]:
-            best[family] = (name, auc_pr)
+        auc_pr_val = auc_pr(predict(spark, name, "val"))
+        print(f"[stacking] {name} ({family}): AUC-PR val = {auc_pr_val:.4f}")
+        if family not in best or auc_pr_val > best[family][1]:
+            best[family] = (name, auc_pr_val)
 
     if len(best) < 2:
         raise ValueError("El stacking necesita modelos de al menos dos familias")
@@ -149,9 +166,11 @@ def ablation(val: DataFrame, test: DataFrame, base: dict, full_auc_pr: float) ->
     for family in base:
         cols = [name for fam, name in base.items() if fam != family]
         meta = fit_meta(val, cols)
-        auc_pr = EVALUATOR.evaluate(to_score(meta.transform(test)))
-        rows.append({"removed_family": family, "auc_pr_test": auc_pr, "drop": full_auc_pr - auc_pr})
-        print(f"[stacking] sin {family}: AUC-PR test = {auc_pr:.4f} (caída {full_auc_pr - auc_pr:+.4f})")
+        auc_pr_test = auc_pr(to_score(meta.transform(test)))
+        rows.append({"removed_family": family, "auc_pr_test": auc_pr_test,
+                     "drop": full_auc_pr - auc_pr_test})
+        print(f"[stacking] sin {family}: AUC-PR test = {auc_pr_test:.4f} "
+              f"(caída {full_auc_pr - auc_pr_test:+.4f})")
     return pd.DataFrame(rows).sort_values("drop", ascending=False)
 
 

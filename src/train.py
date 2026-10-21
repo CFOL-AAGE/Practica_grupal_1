@@ -212,7 +212,7 @@ def tune_dense(train: DataFrame, input_col: str, model: str,
         input_col: str
             Dense features column: "features_style" or "features_lm"
         model: str
-            "lr" or "gbt"
+            "lr", "gbt" or "rf"
         num_folds: int
             Number of folds of the cross validation
         parallelism: int
@@ -229,7 +229,7 @@ def tune_dense(train: DataFrame, input_col: str, model: str,
     sample = train.sampleBy("label", fractions=fractions, seed=SEED)
     sample = add_stratified_folds(sample, num_folds)
 
-    # AUC-PR of the class 1.0 (AI); rawPrediction exists in LR and GBT
+    # AUC-PR of the class 1.0 (AI); rawPrediction exists in LR, GBT and RF
     evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="rawPrediction",
                                               metricName="areaUnderPR")
 
@@ -250,7 +250,7 @@ def train_dense_model(spark: SparkSession, input_col: str, model: str,
         input_col: str
             "features_style" or "features_lm"
         model: str
-            "lr" or "gbt"
+            "lr", "gbt" or "rf"
         parallelism: int
             Number of combinations trained at the same time in the CrossValidator
     """
@@ -280,7 +280,7 @@ def train_dense_model(spark: SparkSession, input_col: str, model: str,
 
 
 def train_all_dense(spark: SparkSession, input_cols: tuple = ("features_style", "features_lm"),
-                    models: tuple = ("lr", "gbt"), parallelism: int = 2) -> None:
+                    models: tuple = ("lr", "gbt", "rf"), parallelism: int = 2) -> None:
     """
     Trains every combination of dense column x model of the families 3 and 4
     (the saved ones are skipped).

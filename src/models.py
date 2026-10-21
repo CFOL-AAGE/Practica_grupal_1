@@ -10,7 +10,8 @@ Sparse features (families 1 and 2: lexical.parquet and char.parquet):
 Dense features (families 3 and 4: style.parquet and lm.parquet):
     build_dense_pipeline, build_dense_grid
     LogisticRegression (StandardScaler inside the Pipeline) as linear baseline,
-    and GBTClassifier for non-linear interactions (no scaling needed).
+    and GBTClassifier and RandomForestClassifier for non-linear interactions
+    (no scaling needed).
 """
 
 from pyspark.ml import Pipeline
@@ -97,17 +98,18 @@ def build_dense_pipeline(input_col: str, model: str) -> Pipeline:
         input_col: str
             Dense features column (assembled vector)
         model: str
-            "lr" (LogisticRegression) or "gbt" (GBTClassifier)
+            "lr" (LogisticRegression), "gbt" (GBTClassifier) or "rf" (RandomForestClassifier)
 
     Returns:
         Pipeline
-            lr:  StandardScaler (Estimator, fitted inside each fit) -> LogisticRegression
-            gbt: GBTClassifier directly over the features (trees do not need scaling)
+            lr:      StandardScaler (Estimator, fitted inside each fit) -> LogisticRegression
+            gbt, rf: classifier directly over the features (trees do not need scaling)
     """
     classifiers = {
         "lr": LogisticRegression(featuresCol="scaled", labelCol="label", maxIter=100),
         "gbt": GBTClassifier(featuresCol=input_col, labelCol="label", seed=SEED),
-        "rf": RandomForestClassifier(featureSubsetStrategy='sqrt', seed=SEED),
+        "rf": RandomForestClassifier(featuresCol=input_col, labelCol="label",
+                                     featureSubsetStrategy="sqrt", seed=SEED),
     }
     pip_stages = []
 
@@ -133,7 +135,7 @@ def build_dense_grid(pipeline: Pipeline, model: str) -> list:
         pipeline: Pipeline
             Output of build_dense_pipeline
         model: str
-            "lr" or "gbt"
+            "lr", "gbt" or "rf"
 
     Returns:
         list
@@ -149,7 +151,11 @@ def build_dense_grid(pipeline: Pipeline, model: str) -> list:
         grid.addGrid(clf.maxDepth, [3, 5])                             # 2 x 2 = 4
         grid.addGrid(clf.maxIter, [50, 100])                           # number of trees
     elif model == "rf":
-        grid.ddGrid(clf.maxIter, [50, 100])
-        grid.addGrid(clf.maxDepth, [4, 6])
+        grid.addGrid(clf.numTrees, [50, 100])                          # 2 x 2 = 4
+        grid.addGrid(clf.maxDepth, [8, 12])                            # deeper than GBT: averaging cuts the variance
 
-    return grid.build()
+    param_maps = grid.build()
+    if model == "lr":
+        # With regParam = 0 the elasticNetParam has no effect: drop the repeated combination (6 -> 5)
+        param_maps = [m for m in param_maps if m[clf.regParam] > 0 or m[clf.elasticNetParam] == 0.0]
+    return param_maps

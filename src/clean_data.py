@@ -3,7 +3,6 @@ Carga, limpieza y partición del dataset. Salida: data/clean.parquet
 """
 
 import os
-import sys
 
 from huggingface_hub import snapshot_download
 from pyspark.sql import DataFrame, SparkSession
@@ -41,27 +40,6 @@ def load_raw(spark: SparkSession) -> DataFrame:
     print("Empezando con la carga de datos...")
     return spark.read.parquet(str(RAW_DIR / "data"))
 
-def audit_artifacts(df: DataFrame) -> None:
-    """% de textos de cada clase con artefactos de formato (posibles atajos)."""
-    text = F.col("text")
-    checks = {
-        "empieza_minuscula": text.rlike(r"^[a-z]"),
-        "empieza_espacio": text.rlike(r"^\s"),
-        "comillas_latex": text.contains("``"),
-        "apostrofo_separado": text.rlike(r"\w [’'] \w"),
-        "salto_literal": text.contains("\\n"),     # el texto "\n", no un salto real
-        "salto_real": text.contains("\n"),
-    }
-    df.groupBy("source").agg(
-        *[F.round(F.avg(cond.cast("int")) * 100, 2).alias(name) for name, cond in checks.items()]
-    ).show(truncate=False)
-
-    # Distribución de longitudes (percentiles 5, 25, 50, 75 y 95)
-    df.groupBy("source").agg(
-        F.percentile_approx(F.length(text), [0.05, 0.25, 0.5, 0.75, 0.95]).alias("percentiles_chars")
-    ).show(truncate=False)
-
-
 def add_subsource(df: DataFrame) -> DataFrame:
     """Fuente original inferida a partir de los rangos de id. NUNCA usar como feature."""
     i, h = F.col("id"), F.col("source") == "human"
@@ -93,7 +71,9 @@ def clean_text(df: DataFrame) -> DataFrame:
     t = F.regexp_replace(t, r"\( ", "(")
     # 5. Espacios y saltos -> un espacio; quitar extremos
     t = F.trim(F.regexp_replace(t, r"\s+", " "))
-    # 6. Empezar en la primera frase completa
+    # 6. Descartar siempre la primera frase: no se puede saber si un texto empieza cortado
+    #    (un trozo de Reddit puede empezar con mayúscula a mitad de frase), y así todos los
+    #    textos empiezan a mitad de documento, como los trozos de Reddit
     t = F.regexp_replace(t, r'^.*?[.!?]"? (?=[A-Z"])', "")
     return df.withColumn("text", t)
 

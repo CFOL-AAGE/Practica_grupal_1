@@ -33,11 +33,8 @@ BACKOFF_ALPHA = 0.4                # penalización del Stupid Backoff (Brants et
 
 
 # Datos
-SAMPLE_SIZE = None        # None = dataset completo
 TUNING_FRACTION = 0.15    # fracción de train usada en CrossValidator
-MIN_WORDS = 50            # textos más cortos se descartan
-WINDOW_WORDS = 100        # ventana fija para neutralizar el atajo de la longitud (justificada en análisis exploratorio)
-LABELS = {"human": 0, "ai": 1}
+WINDOW_WORDS = 100        # ventana fija para neutralizar el atajo de la longitud; los textos más cortos se descartan (justificada en análisis exploratorio)
 
 
 # Splits
@@ -54,7 +51,7 @@ def get_spark(app_name: str = "aage-p1", driver_memory: str = "8g") -> SparkSess
     return (
         SparkSession.builder
         .appName(app_name)
-        .master("local[*]")                               # usa todos los cores del Mac
+        .master("local[*]")                               # usa todos los núcleos de la máquina
         .config("spark.driver.memory", driver_memory)     # ajustar a la RAM de cada uno
         .config("spark.sql.shuffle.partitions", "64")     # 200 por defecto es excesivo en local
         .getOrCreate()
