@@ -14,7 +14,7 @@ Dense features (families 3 and 4: style.parquet and lm.parquet):
 """
 
 from pyspark.ml import Pipeline
-from pyspark.ml.classification import LinearSVC, LogisticRegression, NaiveBayes, GBTClassifier
+from pyspark.ml.classification import LinearSVC, LogisticRegression, NaiveBayes, GBTClassifier, RandomForestClassifier
 from pyspark.ml.feature import IDF, StandardScaler
 from pyspark.ml.tuning import ParamGridBuilder
 
@@ -106,7 +106,8 @@ def build_dense_pipeline(input_col: str, model: str) -> Pipeline:
     """
     classifiers = {
         "lr": LogisticRegression(featuresCol="scaled", labelCol="label", maxIter=100),
-        "gbt": GBTClassifier(featuresCol=input_col, labelCol="label", seed=SEED)
+        "gbt": GBTClassifier(featuresCol=input_col, labelCol="label", seed=SEED),
+        "rf": RandomForestClassifier(featureSubsetStrategy='sqrt', seed=SEED),
     }
     pip_stages = []
 
@@ -147,5 +148,8 @@ def build_dense_grid(pipeline: Pipeline, model: str) -> list:
     elif model == "gbt":
         grid.addGrid(clf.maxDepth, [3, 5])                             # 2 x 2 = 4
         grid.addGrid(clf.maxIter, [50, 100])                           # number of trees
+    elif model == "rf":
+        grid.ddGrid(clf.maxIter, [50, 100])
+        grid.addGrid(clf.maxDepth, [4, 6])
 
     return grid.build()
