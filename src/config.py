@@ -43,7 +43,7 @@ LM_FIT_FRACTION = 0.30    # % de humanos de train reservados SOLO para el modelo
 
 
 # Spark
-def get_spark(app_name: str = "aage-p1", driver_memory: str = "8g") -> SparkSession:
+def get_spark(app_name: str = "aage-p1", driver_memory: str = "44g") -> SparkSession:
     """
     Crea (o reutiliza) la sesión de Spark con la misma configuración
     para todos.
@@ -51,8 +51,9 @@ def get_spark(app_name: str = "aage-p1", driver_memory: str = "8g") -> SparkSess
     return (
         SparkSession.builder
         .appName(app_name)
-        .master("local[*]")                               # usa todos los núcleos de la máquina
-        .config("spark.driver.memory", driver_memory)     # ajustar a la RAM de cada uno
-        .config("spark.sql.shuffle.partitions", "64")     # 200 por defecto es excesivo en local
+        .master("local[16]")                              # 16 cores SLURM (-c 16)
+        .config("spark.driver.memory", driver_memory)     # 44g de 48G SLURM (resto para JVM overhead)
+        .config("spark.driver.maxResultSize", "8g")       # evita OOM al recoger resultados grandes
+        .config("spark.sql.shuffle.partitions", "48")     # ~3× cores, equilibrio entre paralelismo y overhead
         .getOrCreate()
     )
