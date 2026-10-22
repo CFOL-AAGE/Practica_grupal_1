@@ -1,0 +1,5 @@
+family,model,weight
+lexical,tf_lr,2.336235724744988
+style,features_style_gbt,0.8837911479795046
+char,tf_char_nb,0.4312941373762323
+lm,features_lm_gbt,0.4110540560515874
