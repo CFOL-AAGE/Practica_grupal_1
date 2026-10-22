@@ -7,6 +7,8 @@ Clasificación de textos humanos frente a generados por IA con **Spark MLlib**, 
 
 **Autores:** Alicia Losada Sánchez, Carlos Francisco Orejuela Lluncor, Hugo Varela Sánchez.
 
+**Repositorio:** [GitHub](https://github.com/CFOL-AAGE/Practica_grupal_1)
+
 ## Requisitos
 
 - Python 3.10 o superior
@@ -51,17 +53,48 @@ basta con borrar su carpeta de salida.
 
 ### Ejecución en el CESGA
 
-Los resultados de `results/` se obtuvieron en el CESGA, enviando `main.py` al sistema de colas:
+Tanto el procesamiento de la familia de características (`features/`) como el entrenamiento y validación de los
+modelos a partir de estos datos de entrada se realizaron utilizando la infraestructura del **CESGA** mediante el sistema de colas.
+A continuación se presenta el paso a paso para ejecutarlo en el caso de contar con credenciales para conectarse via SSH al CESGA:
 
 ~~~bash
-# TODO: script de colas y comando de envío (p. ej. sbatch <script>)
+# Entorno local
+$ ssh <user>@ft3.cesga.es # Introducir vuestra contraseña
+
+
+# CESGA
+
+# 1) Clonar el repositorio
+$ git clone https://github.com/CFOL-AAGE/Practica_grupal_1
+
+# 2) Instalar el entorno virtual
+$ cd Practica_grupal_1
+$ python3 -m venv cesga_venv; source cesga_venv/bin/activate
+$ pip install -r requirements.txt
+
+# 3) Crear fichero `run.sh` para enviar la ejecución al sistema de colas
+#    El contenido de este se presenta en el siguiente bloque de código
+
+# 4) Asignarlo el trabajo sistema de colas mediante el comando `sbatch`
+$ sbatch run.sh
 ~~~
 
-<!-- TODO: recursos solicitados (nodos, núcleos, memoria, tiempo máximo) y cualquier
-     módulo o entorno que haya que cargar antes de ejecutar -->
+Cuerpo de Practica_grupal_1/run.sh`:
 
-En un ordenador personal basta con `python3 main.py`; el tamaño de la memoria del driver se
-ajusta en `get_spark` (`src/config.py`).
+~~~bash
+#!/bin/bash
+#SBATCH -c 16
+#SBATCH -t 04:00:00
+#SBATCH --mem=48G
+
+source cesga_venv/bin/activate
+cd src/
+python3 main.py
+~~~
+
+Para consultar el estado de la ejecución se genera un fichero `slurm-*.out`. En este archivo se guarda tanto el stdout como stderror, lo que permite monitorizar el entrenamiento y validación de los modelos.
+
+En el caso de querer ejecutarlo de forma local, basta con ejecutar el comando `python3 main.py` desde `Practica_grupal_1/src`; el tamaño de la memoria del driver se ajusta en `get_spark` (`src/config.py`).
 
 ## Datos generados: `data/clean.parquet`
 
