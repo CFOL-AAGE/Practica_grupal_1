@@ -48,7 +48,7 @@ probabilidad del texto~\cite{gehrmann2019gltr,mitchell2023detectgpt}, lo que es 
 a millones de documentos. Nos preguntamos hasta dónde llegan features clásicas, baratas y
 calculables en paralelo con Spark~\cite{zaharia2016spark,meng2016mllib}.
 
-Usamos \emph{AI Text Detection Pile}~\cite{aitextpile}: 1.392.522 textos (1,9~GB en 7 ficheros
+Usamos \emph{AI Text Detection Pile}: 1.392.522 textos (1,9~GB en 7 ficheros
 Parquet), un 73,8\,\% humanos y un 26,2\,\% generados por IA. Es lo bastante grande para que
 el preprocesado, la extracción de features y la búsqueda de hiperparámetros no quepan
 cómodamente en una sola máquina, y por eso la ejecución final se hizo en el CESGA.
@@ -59,8 +59,8 @@ cómodamente en una sola máquina, y por eso la ejecución final se hizo en el C
 \paragraph{Fuentes.} El dataset solo indica si cada texto es humano o IA, pero los \texttt{id}
 están ordenados por origen. Analizando la longitud y las marcas de formato a lo largo del
 \texttt{id} identificamos ocho bloques que coinciden en tamaño con lo que declara la ficha:
-ensayos de IvyPanda, WebText, respuestas humanas de HC3~\cite{guo2023hc3} y relatos de Reddit
-WritingPrompts~\cite{fan2018stories} en el lado humano; GPT-3, GPT-2~\cite{radford2019gpt2},
+ensayos de IvyPanda, WebText, respuestas humanas de HC3 y relatos de Reddit
+WritingPrompt en el lado humano; GPT-3, GPT-2,
 GPT-J y ChatGPT en el de la IA. Esta columna (\texttt{subsource}) es inferida y solo se usa
 para analizar resultados, nunca como feature, porque el \texttt{id} separa las clases al 100\,\%.
 
@@ -81,43 +81,36 @@ como los de Reddit. El precio es perder aperturas que sí son estilo, como el ``
 to understand\ldots'' de ChatGPT. Tras la limpieza todas las marcas medidas bajan a cerca del
 0\,\%.
 
-\paragraph{Ventana, duplicados y particiones.} Cada texto se recorta a sus primeras 100
+\paragraph{Ventana y duplicados} Cada texto se recorta a sus primeras 100
 palabras y se descartan los más cortos. Es el compromiso entre conservar Reddit (sus trozos
 rondan las 170 palabras) y tener texto suficiente para la estilometría. Quedan unos 1,19
 millones de textos con un 22\,\% de IA, aunque las fuentes de respuestas cortas pierden mucho
 (sobrevive el 14,5\,\% de GPT-3 y el 25\,\% de HC3). Después eliminamos los duplicados exactos,
 conservando la copia de menor \texttt{id}, y los textos que aparecen con las dos etiquetas.
 
-La partición en train, val y test (70/15/15) se hace con un hash del \texttt{id}
-(\texttt{xxhash64}) y no con \texttt{randomSplit}, para que sea idéntica en cualquier máquina
-y número de particiones. Un 30\,\% de los humanos de train se reserva (\texttt{lm\_fit}) para
-construir el modelo de n-gramas de la familia~4, de forma que ningún clasificador ve esos
-textos. Por eso train tiene un 29\,\% de IA y val y test un 22,5\,\%.
-
 % ------------------------------------------------------------------------------------------
 \section{Features}
 
 \begin{enumerate}
-\item \textbf{Léxicas.} Unigramas y bigramas de palabras en minúscula, con y sin
-\emph{stopwords}, contados con \texttt{HashingTF} ($2^{18}$ posiciones). El hashing evita
-construir un vocabulario global, que exigiría una pasada extra y un diccionario en el
-driver~\cite{weinberger2009hashing}.
+
+    \item \textbf{Léxicas.} Unigramas y bigramas de palabras en minúscula, con y sin
+\emph{stopwords}, contados con \texttt{HashingTF} ($2^{18}$ posiciones).
+
 \item \textbf{Caracteres.} N-gramas de 3 a 5 caracteres, conservando mayúsculas, espacios y
 puntuación. MLlib no tiene n-gramas de caracteres, así que los construimos con
 \texttt{RegexTokenizer} (un token por carácter) seguido de \texttt{NGram}.
-\item \textbf{Estilométricas.} 32 medidas por texto~\cite{stamatatos2009survey}: riqueza
+
+\item \textbf{Estilométricas.} 32 medidas por texto: riqueza
 léxica (TTR, hápax), histograma y media de la longitud de palabra, número y longitud de las
 frases y su variabilidad, frecuencia de ocho signos de puntuación, mayúsculas, dígitos,
-contracciones, repetición de bigramas y trigramas y proporción de \emph{stopwords}. Todas se
-calculan con funciones de orden superior sobre arrays (\texttt{transform}, \texttt{filter},
-\texttt{aggregate}), sin salir de la JVM.
+contracciones, repetición de bigramas y trigramas y proporción de \emph{stopwords}.
+
 \item \textbf{Previsibilidad.} Un modelo de trigramas con \emph{Stupid
-Backoff}~\cite{brants2007backoff} entrenado con los textos humanos de \texttt{lm\_fit}. Los
+Backoff} entrenado con los textos humanos de \texttt{lm\_fit}. Los
 conteos son un \emph{word count} distribuido. La primera versión lo hacía con RDDs
 (\texttt{flatMap} y \texttt{reduceByKey}); la sustituimos por \texttt{explode} y
 \texttt{groupBy} sobre DataFrames, porque el RDD serializa cada n-grama entre la JVM y Python,
-mientras que con DataFrames todo el conteo se queda en la JVM. \pendiente{Tiempos de las dos
-versiones en el CESGA, si se midieron.} Para puntuar cada palabra, las tablas de
+mientras que con DataFrames todo el conteo se queda en la JVM. Para puntuar cada palabra, las tablas de
 n-gramas se cruzan con los textos mediante \emph{broadcast joins} sobre claves hash. De cada
 texto salen 9 features: media, desviación y percentil 10 de la log-probabilidad, nivel del
 backoff usado y, siguiendo a GLTR~\cite{gehrmann2019gltr}, la fracción de palabras que estaban
@@ -129,26 +122,27 @@ entre las 1, 10 y 100 continuaciones más probables.
 
 Sobre las features dispersas (familias 1 y 2) entrenamos Naive Bayes multinomial con los
 conteos, y regresión logística y \texttt{LinearSVC} con TF-IDF. Sobre las densas (3 y 4)
-usamos regresión logística con \texttt{StandardScaler}, GBT y Random Forest. Los estimadores
-que aprenden de los datos (IDF, escalado) van dentro del \texttt{Pipeline}, así que en la
-validación cruzada solo ven el train de cada fold.
+usamos regresión logística con \texttt{StandardScaler}, GBT y Random Forest.
+
+Con respecto a la partición de los datos: 70\% destinado a entrenamiento, 15\% a validación y
+el restante a test. Aunque cabe aclarar que el 30\% de los textos humanos fueron reservados para
+construir el modelo de n-gramas de la familia 4 (\texttt{lm-fit}).
 
 Los hiperparámetros se eligen con \texttt{CrossValidator} de 3 folds sobre una muestra
-estratificada del 15\,\% de train, con folds también estratificados y asignados por hash
-(\texttt{foldCol}). Las rejillas son pequeñas (de 3 a 6 combinaciones) porque cada una cuesta
-tres ajustes. Con la mejor combinación se reentrena el \texttt{Pipeline} con todo train.
+estratificada del 15\,\% de train, con folds también estratificados. Las rejillas son pequeñas
+(de 3 a 6 combinaciones) porque cada una cuesta tres ajustes. Con la mejor combinación se
+reentrena el \texttt{Pipeline} con todo train.
 
 \paragraph{Métricas.} La métrica principal es la AUC-PR de la clase IA. Con un 22,5\,\% de
 positivos la AUC-ROC es optimista, porque los muchos verdaderos negativos la inflan, mientras
-que la AUC-PR se centra en la clase que nos interesa y tiene una línea base clara, la
-prevalencia~\cite{davis2006prroc,saito2015prplot}. Damos además la AUC-ROC y la tasa de
+que la AUC-PR se centra en la clase que nos interesa. Damos además la AUC-ROC y la tasa de
 detección con un 1\,\% de falsos positivos, que es lo relevante si acusar a un humano tiene
 un coste alto. Para las métricas con umbral (precisión, recall, F1, FPR) el umbral se fija en
 val maximizando el F1 y se aplica sin tocar a test. Por último, calculamos el recall en cada
 generador y el FPR en cada fuente humana.
 
 \paragraph{Stacking.} Tomamos el mejor modelo de cada familia según su AUC-PR en
-val~\cite{wolpert1992stacking}. Un meta-modelo (escalado y regresión logística) aprende a
+val. Un meta-modelo (escalado y regresión logística) aprende a
 combinar sus scores en val, donde los modelos base no han visto los textos; en train sus
 scores serían optimistas. Medimos lo que aporta cada familia reentrenando el meta-modelo sin
 ella (ablación).
@@ -169,9 +163,6 @@ carga los ficheros de la partición que necesita.
 % ------------------------------------------------------------------------------------------
 \section{Resultados}
 
-\pendiente{Actualizar la tabla con la ejecución completa del CESGA: tf\_nostop\_lr, tf\_char\_*,
-RF y stacking.}
-
 \begin{table}
 \centering
 \caption{Resultados en test (177.060 textos, 22,5\,\% de IA). La línea base de la AUC-PR es
@@ -181,20 +172,21 @@ RF y stacking.}
 \toprule
 Features & Modelo & AUC-PR & AUC-ROC & F1 & FPR & TPR@1\,\% \\
 \midrule
-Léxicas & LR & \textbf{0,837} & \textbf{0,946} & \textbf{0,773} & \textbf{0,086} & \textbf{0,365} \\
+Léxicas & LR & 0,837 & 0,946 & 0,773 & 0,086 & 0,365 \\
 Léxicas & SVC & 0,789 & 0,923 & 0,731 & 0,099 & 0,300 \\
 Léxicas & NB & 0,692 & 0,889 & 0,651 & 0,149 & 0,197 \\
 Léxicas sin \emph{stopwords} & SVC & 0,696 & 0,883 & 0,660 & 0,144 & 0,194 \\
+Léxicas sin \emph{stopwords} & LR & 0,672 & 0,887 & 0,655 & 0,163 & 0,154 \\
 Léxicas sin \emph{stopwords} & NB & 0,648 & 0,883 & 0,644 & 0,177 & 0,130 \\
-Caracteres & NB, LR, SVC & \pendiente{} & & & & \\
+Caracteres & NB & 0,594 & 0,855 & 0,587 & 0,274 & 0,115 \\
 Estilo & GBT & 0,645 & 0,871 & 0,629 & 0,180 & 0,144 \\
+Estilo & RF & 0,634 & 0,864 & 0,619 & 0,173 & 0,137 \\
 Estilo & LR & 0,531 & 0,818 & 0,567 & 0,225 & 0,067 \\
-Estilo & RF & \pendiente{} & & & & \\
 Previsibilidad & GBT & 0,369 & 0,668 & 0,423 & 0,438 & 0,046 \\
+Previsibilidad & RF & 0,368 & 0,668 & 0,423 & 0,424 & 0,046 \\
 Previsibilidad & LR & 0,333 & 0,625 & 0,396 & 0,454 & 0,037 \\
-Previsibilidad & RF & \pendiente{} & & & & \\
 \midrule
-Stacking & LR & \pendiente{} & & & & \\
+Stacking & LR & \textbf{0,863} & \textbf{0,957} & \textbf{0,796} & \textbf{0,080} & \textbf{0,408} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -207,36 +199,11 @@ logística, así que las interacciones entre features importan. La previsibilida
 más débil: el modelo de trigramas, entrenado sobre todo con relatos de Reddit, mide más el
 parecido con ese género que la previsibilidad del texto. Aun así, su regresión logística
 detecta el 82\,\% de GPT-3, frente al 32\,\% de la de estilo, lo que apunta a información
-complementaria (aunque en test solo hay 722 textos de GPT-3). \pendiente{Pesos del stacking y ablación: qué familia aporta lo que las demás no
-tienen.}
+complementaria (aunque en test solo hay 722 textos de GPT-3).
 
 En todos los modelos val y test difieren menos de 0,01 en AUC-PR, así que el umbral elegido en
 val se transfiere bien. La AUC-PR de la validación cruzada no es comparable con estas cifras:
 train tiene un 29\,\% de IA y la AUC-PR depende de la prevalencia.
-
-\begin{table}
-\centering
-\caption{Mejor modelo (léxicas, LR) en test por fuente: FPR en las humanas y recall en las de
-IA, con el umbral elegido en val.}
-\label{tab:fuentes}
-\begin{tabular}{lrrclrr}
-\toprule
-Humanas & $n$ & FPR & \hspace{1em} & IA & $n$ & Recall \\
-\midrule
-Reddit WP & 85.566 & 0,017 & & GPT-2 & 34.960 & 0,810 \\
-WebText & 31.207 & 0,282 & & ChatGPT & 2.644 & 0,883 \\
-IvyPanda & 18.941 & 0,064 & & GPT-J & 1.513 & 0,880 \\
-HC3 & 1.507 & 0,267 & & GPT-3 & 722 & 0,814 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Validez.} La Tabla~\ref{tab:fuentes} matiza el resultado global. Reddit es casi la
-mitad de test y su FPR es del 1,7\,\%, porque ninguna fuente de IA escribe ficción: el modelo
-aprende en parte que un relato es humano. En los pares del mismo dominio el problema es mucho
-más difícil. Frente a GPT-2, los textos de WebText se marcan como IA en un 28\,\% de los casos,
-y de ahí sale el 74\,\% de todos los falsos positivos. Con HC3 frente a ChatGPT el FPR es
-similar (27\,\%). El FPR global del 8,6\,\% es, por tanto, optimista para un uso real.
 
 % ------------------------------------------------------------------------------------------
 \section{Conclusiones}
