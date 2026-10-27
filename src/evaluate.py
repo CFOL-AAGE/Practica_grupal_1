@@ -15,6 +15,11 @@ cinco clasificadores (LinearSVC no da probabilidades) y crece con la confianza e
 Salida: results/metrics.csv (una fila por modelo) y results/by_subsource.csv
 """
 
+# AUC-PR: mide lo bien que el modelo encuentra los textos de IA sin acusar a humanos de más. Es nuestra métrica principal porque se centra en la clase IA, que es minoritaria (22,5 %); un modelo al azar sacaría 0,225.
+# AUC-ROC: mide lo bien que el modelo separa las dos clases en general (0,5 es el azar y 1 es perfecto). La damos como complemento, porque con tantos humanos sale optimista.
+# El porcentaje de textos de IA que detecta el modelo si solo se permite acusar falsamente a 1 de cada 100 humanos.
+# Por ejemplo, el stacking saca 0,41: con ese límite tan estricto, detecta el 41 % de la IA.
+
 import json
 
 import pandas as pd

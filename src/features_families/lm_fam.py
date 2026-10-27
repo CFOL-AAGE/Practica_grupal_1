@@ -6,6 +6,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.functions import vector_to_array
 
 from config import CLEAN_PATH, LM_DIR, LM_ORDER, LM_MIN_COUNT, BACKOFF_ALPHA, FEATURES_DIR, SEED, get_spark
 
@@ -283,7 +284,6 @@ if __name__ == "__main__":
     elif paso == "features":
         frac = float(sys.argv[2]) if len(sys.argv) > 2 else None
         build_features(spark, frac)
-        from pyspark.ml.functions import vector_to_array
         f = spark.read.parquet(str(FEATURES_DIR / ("lm_sample.parquet" if frac else "lm.parquet")))
         print("textos:", f.count())
         # label vive en clean.parquet; el vector se separa de nuevo en sus 9 columnas

@@ -72,14 +72,14 @@ $ cd Practica_grupal_1
 $ python3 -m venv cesga_venv; source cesga_venv/bin/activate
 $ pip install -r requirements.txt
 
-# 3) Crear fichero `run.sh` para enviar la ejecución al sistema de colas
-#    El contenido de este se presenta en el siguiente bloque de código
+# 3) El fichero `run.sh` (en la raíz) envía la ejecución al sistema de colas;
+#    su contenido se muestra en el siguiente bloque de código
 
 # 4) Asignarlo el trabajo sistema de colas mediante el comando `sbatch`
 $ sbatch run.sh
 ~~~
 
-Cuerpo de Practica_grupal_1/run.sh`:
+Contenido de `run.sh`:
 
 ~~~bash
 #!/bin/bash
